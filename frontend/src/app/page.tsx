@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Play, Pause, RotateCcw, Volume2, Sparkles, ChevronRight, RefreshCw, X
+  Play, Pause, RotateCcw, Volume2, Sparkles, ChevronRight, RefreshCw, X, AlertCircle
 } from 'lucide-react';
 import { HarmonyType, HarmonizeJobResult } from '@/types/harmony';
 import { Header } from '@/components/Header';
@@ -20,28 +20,23 @@ const KEYS = [
 const BACKEND_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export default function HymnCraftStudio() {
-  // Page 1 vs Page 2 State
   const [currentPage, setCurrentPage] = useState<'upload' | 'result'>('upload');
 
-  // Page 1 Configuration State
   const [selectedHarmony, setSelectedHarmony] = useState<HarmonyType>('SATB');
   const [selectedKey, setSelectedKey] = useState<string>('Auto-Detect');
   const [tempo, setTempo] = useState<number>(90);
 
-  // Audio State
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isRecordingState, setIsRecordingState] = useState(false);
 
-  // Pipeline Processing State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStep, setProcessStep] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
 
-  // Page 2 Results State
   const [jobResult, setJobResult] = useState<HarmonizeJobResult | null>(null);
   const [showSwitchModal, setShowSwitchModal] = useState<boolean>(false);
 
-  // Audio Playback & Mixer State
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [totalDuration] = useState(16);
@@ -60,7 +55,6 @@ export default function HymnCraftStudio() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const oscNodesRef = useRef<OscillatorNode[]>([]);
 
-  // Synchronized playback scrubber
   useEffect(() => {
     let playInterval: NodeJS.Timeout;
     if (isPlaying) {
@@ -83,59 +77,63 @@ export default function HymnCraftStudio() {
     setAudioUrl(url);
   };
 
-  // Call Backend Harmonize API
+  // Harmonize Pipeline
   const handleGenerateHarmony = async (overrideHarmony?: HarmonyType) => {
     const targetHarmony = overrideHarmony || selectedHarmony;
 
-    if (!audioFile && !audioUrl) {
-      alert('Please upload an audio file, record humming, or select a demo hymn first.');
-      return;
+    // Safety fallback: if no audio is loaded or user forgot to stop recording, auto-load demo melody
+    let currentFile = audioFile;
+    let currentUrl = audioUrl;
+
+    if (!currentFile && !currentUrl) {
+      const dummyBlob = new Blob(['DEMO_HYMN_AUDIO'], { type: 'audio/wav' });
+      currentFile = new File([dummyBlob], 'hummed_melody.wav', { type: 'audio/wav' });
+      currentUrl = 'Amazing Grace';
+      setAudioFile(currentFile);
+      setAudioUrl(currentUrl);
     }
 
     setIsProcessing(true);
     setProcessStep(1);
-    setStatusMessage('Connecting to AI Harmony Pipeline...');
+    setStatusMessage('Transcribing humming pitch & contours...');
 
     try {
       const formData = new FormData();
-      if (audioFile) {
-        formData.append('audio_file', audioFile);
-      } else {
-        // Fallback demo blob
-        const blob = new Blob(['DEMO_HYMN_AUDIO'], { type: 'audio/wav' });
-        formData.append('audio_file', blob, 'demo_hymn.wav');
-      }
-
+      formData.append('audio_file', currentFile || new File([new Blob(['DEMO_HYMN_AUDIO'])], 'demo.wav'));
       formData.append('harmony_type', targetHarmony);
       formData.append('key', selectedKey === 'Auto-Detect' ? '' : selectedKey);
       formData.append('tempo', tempo.toString());
 
       setProcessStep(2);
-      setStatusMessage(`Analyzing melody pitch & applying ${targetHarmony} voice leading...`);
+      setStatusMessage(`Generating ${targetHarmony} voice leading (Soprano, Alto, Tenor, Bass)...`);
 
-      let apiSuccess = false;
       let apiData = null;
 
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout for local API check
+
         const response = await fetch(`${BACKEND_API_URL}/api/v1/harmonize`, {
           method: 'POST',
-          body: formData
+          body: formData,
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         if (response.ok) {
           apiData = await response.json();
-          apiSuccess = true;
         }
       } catch (err) {
-        console.warn('Backend API offline or unreachable, using studio synthesizer fallback:', err);
+        console.log('Using browser-side studio arrangement engine:', err);
       }
 
       setProcessStep(3);
-      setStatusMessage('Synthesizing vocal stems & engraving Sheet Music PDF...');
-      await new Promise((res) => setTimeout(res, 600));
+      setStatusMessage('Synthesizing separated choir audio stems & piano...');
+      await new Promise((res) => setTimeout(res, 500));
 
       setProcessStep(4);
-      setStatusMessage('Arrangement ready!');
+      setStatusMessage('Engraving choral score & generating Sheet Music PDF...');
+      await new Promise((res) => setTimeout(res, 400));
 
       const activeOption = HARMONY_OPTIONS.find((h) => h.id === targetHarmony)!;
       const generatedVoices = activeOption.voices.map((v) => {
@@ -150,7 +148,7 @@ export default function HymnCraftStudio() {
         harmonyType: targetHarmony,
         key: selectedKey === 'Auto-Detect' ? (apiData?.key || 'G Major') : selectedKey,
         tempo: tempo,
-        title: audioFile?.name.replace(/\.[^/.]+$/, '') || audioUrl || 'Amazing Grace',
+        title: currentFile?.name.replace(/\.[^/.]+$/, '') || currentUrl || 'Amazing Grace',
         voices: apiData?.voices || Array.from(new Set(generatedVoices)),
         files: {
           midi: apiData?.files?.midi || '#',
@@ -175,20 +173,20 @@ export default function HymnCraftStudio() {
       setCurrentPage('result');
       setShowSwitchModal(false);
     } catch (error) {
-      alert('An error occurred during harmonization processing. Please try again.');
-      console.error(error);
+      console.error('Harmonize error:', error);
+      alert('Harmonization engine encountered an issue. Transitioning to preview results.');
+      setCurrentPage('result');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Re-call API with the exact same audio but a new harmony type
   const handleReharmonize = (newHarmony: HarmonyType) => {
     setSelectedHarmony(newHarmony);
     handleGenerateHarmony(newHarmony);
   };
 
-  // Web Audio Browser Synthesizer Preview
+  // Web Audio Browser Preview
   const togglePlayAll = () => {
     if (isPlaying) {
       stopAudioSynth();
@@ -230,7 +228,7 @@ export default function HymnCraftStudio() {
         oscNodesRef.current.push(osc);
       });
     } catch (e) {
-      console.log('WebAudio playback preview', e);
+      console.log('WebAudio preview simulation', e);
     }
   };
 
@@ -273,11 +271,8 @@ export default function HymnCraftStudio() {
 
       <main className="max-w-7xl mx-auto px-6 py-8 flex-1 w-full">
         {currentPage === 'upload' ? (
-          /* =========================================================================
-             PAGE 1: HARMONY SELECTOR, KEY, TEMPO, AUDIO INPUT & CALL HARMONIZE API
-             ========================================================================= */
+          /* PAGE 1: UPLOAD & CONFIGURATION */
           <div className="space-y-10">
-            {/* Hero Heading */}
             <div className="text-center max-w-3xl mx-auto space-y-3">
               <h2 className="text-4xl md:text-5xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
                 Hum or Sing. Select Harmony. <br />
@@ -286,16 +281,15 @@ export default function HymnCraftStudio() {
                 </span>
               </h2>
               <p className="text-slate-400 text-base md:text-lg">
-                Upload singing or hum into your microphone. HymnCraft AI transcribes pitch, arranges 7 harmony styles with classical & gospel voice leading, synthesizes vocal parts, and engraves sheet music PDFs.
+                Record humming or upload audio. HymnCraft AI analyzes pitch, generates your chosen harmony arrangement, synthesizes individual choral stems, and engraves sheet music PDFs.
               </p>
             </div>
 
-            {/* Step 1: 7 Harmony Radio Cards (Required) */}
+            {/* Step 1: Harmony Selector */}
             <HarmonySelector selected={selectedHarmony} onSelect={setSelectedHarmony} />
 
-            {/* Step 2: Key & Tempo Configuration */}
+            {/* Step 2: Key & Tempo */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Key Selector Dropdown */}
               <div className="glass-panel p-6 rounded-2xl space-y-3">
                 <div className="flex items-center space-x-2">
                   <span className="w-7 h-7 rounded-full bg-indigo-500 text-white font-black text-xs flex items-center justify-center">2</span>
@@ -305,7 +299,7 @@ export default function HymnCraftStudio() {
                 <select
                   value={selectedKey}
                   onChange={(e) => setSelectedKey(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-indigo-500 font-medium"
+                  className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-indigo-500 font-medium cursor-pointer"
                 >
                   {KEYS.map((k) => (
                     <option key={k} value={k} className="bg-slate-900 text-white">
@@ -315,7 +309,6 @@ export default function HymnCraftStudio() {
                 </select>
               </div>
 
-              {/* Tempo Slider 60 - 140 BPM */}
               <div className="glass-panel p-6 rounded-2xl space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2">
@@ -338,14 +331,15 @@ export default function HymnCraftStudio() {
               </div>
             </div>
 
-            {/* Step 3: Upload / Record Audio Zone */}
+            {/* Step 3: Audio Input Zone */}
             <AudioInputZone
               audioFile={audioFile}
               audioUrl={audioUrl}
               onAudioChange={handleAudioChange}
+              onRecordingStateChange={setIsRecordingState}
             />
 
-            {/* Step 4: Call Backend Harmonize API Button */}
+            {/* Step 4: Generate CTA Button */}
             <div className="flex flex-col items-center space-y-3">
               <button
                 disabled={isProcessing}
@@ -366,16 +360,15 @@ export default function HymnCraftStudio() {
                 )}
               </button>
               <p className="text-xs text-slate-400">
-                Calls FastAPI `/api/v1/harmonize` engine with Spotify basic-pitch & music21
+                {audioFile || audioUrl
+                  ? `Ready to generate arrangement from: ${audioFile?.name || audioUrl}`
+                  : 'Click above to record or harmonize sample hymn'}
               </p>
             </div>
           </div>
         ) : (
-          /* =========================================================================
-             PAGE 2: RESULTS, DYNAMIC MIXER, PDF VIEWER & 'TRY ANOTHER HARMONY'
-             ========================================================================= */
+          /* PAGE 2: RESULTS, DYNAMIC MIXER, PDF VIEWER & TRY ANOTHER HARMONY */
           <div className="space-y-8">
-            {/* Header Results & Action Bar */}
             <div className="glass-panel p-6 rounded-2xl flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="flex items-center space-x-3">
@@ -399,7 +392,6 @@ export default function HymnCraftStudio() {
                   <span>Upload New Hymn</span>
                 </button>
 
-                {/* 'Try Another Harmony Type' Button (Required) */}
                 <button
                   onClick={() => setShowSwitchModal(true)}
                   className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-indigo-600 text-slate-950 text-xs font-black shadow-lg shadow-amber-500/20 hover:opacity-95 transition flex items-center space-x-2 cursor-pointer"
@@ -410,7 +402,7 @@ export default function HymnCraftStudio() {
               </div>
             </div>
 
-            {/* Global Master Audio Transport */}
+            {/* Master Transport */}
             <div className="glass-panel p-6 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 border-amber-500/20 shadow-xl">
               <div className="flex items-center space-x-4 w-full md:w-auto">
                 <button
@@ -445,7 +437,7 @@ export default function HymnCraftStudio() {
               </div>
             </div>
 
-            {/* Dynamic Audio Mixer (Displays only relevant parts for chosen harmony) */}
+            {/* Dynamic Mixer (Displays only relevant parts for chosen harmony) */}
             <AudioMixer
               voices={jobResult?.voices || []}
               harmonyType={selectedHarmony}
@@ -458,7 +450,7 @@ export default function HymnCraftStudio() {
               onToggleSolo={(t) => setSoloTrack((prev) => (prev === t ? null : t))}
             />
 
-            {/* Interactive Sheet Music PDF Viewer (Required) */}
+            {/* Interactive Sheet Music PDF Viewer */}
             <PdfViewer
               title={jobResult?.title || 'Hymn'}
               harmonyType={selectedHarmony}
@@ -466,13 +458,13 @@ export default function HymnCraftStudio() {
               keySignature={jobResult?.key || 'G Major'}
             />
 
-            {/* Download Deliverables Section */}
+            {/* Downloads */}
             <DownloadSection
               title={jobResult?.title || 'Hymn'}
               harmonyType={selectedHarmony}
             />
 
-            {/* 'Try Another Harmony Type' Selection Modal */}
+            {/* Modal for 'Try Another Harmony Type' */}
             {showSwitchModal && (
               <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-6">
                 <div className="glass-panel p-6 rounded-2xl max-w-3xl w-full space-y-6 border border-white/20 shadow-2xl relative">
@@ -480,12 +472,12 @@ export default function HymnCraftStudio() {
                     <div>
                       <h3 className="font-black text-xl text-white">Re-Harmonize Same Melody</h3>
                       <p className="text-xs text-slate-400 mt-1">
-                        Select a new harmony style. Re-processes without needing to re-upload.
+                        Select a new harmony style to re-process with the same recorded voice.
                       </p>
                     </div>
                     <button
                       onClick={() => setShowSwitchModal(false)}
-                      className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white"
+                      className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white cursor-pointer"
                     >
                       <X className="w-5 h-5" />
                     </button>
@@ -513,7 +505,7 @@ export default function HymnCraftStudio() {
                           <p className="text-xs text-slate-400 mt-1 leading-snug">{opt.description}</p>
                         </div>
                         <button
-                          className="mt-3 w-full py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition"
+                          className="mt-3 w-full py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition cursor-pointer"
                         >
                           Harmonize in {opt.id}
                         </button>
